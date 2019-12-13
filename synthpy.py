@@ -5,16 +5,17 @@ Synthpy - with FM!
 TODO:
 
 Fix adsr
--
+    - 0's mess it up
 
-Fix saw, tri, sqr, noise wave (follow sine wave)
-
-Add interpolation to basic wavetables to accomodate non-integer frequencies
-    - Might make pitchbend smoother?
-    - Alternatively make them bigger for higher rez (see hdSinTable)
+See if hdWaveTables make smooth pitch bend work
+    - If not look into interpolation
 
 Fix clicks when changing note
     - not noticable with complex sounds
+    - super fast pitchbend?
+
+Why do note sound slightly different on different activations?
+    - Might be inconsistent phasing ie phase of base oscillators getting reset on note change
 
 Fix click that happens when you retrigger the envelope before it's done releasing (use lastlevel)
     - also not noticable with complex sounds
@@ -24,18 +25,20 @@ Key matrix bugs?
     - doesn't happen with midi so must be a keyboard hardware thing
     - playing notes either a half step or an octave apart make it stop accepting keyboard events
 
-Condense waves into 1 function with a switch for wave type
-
 Add generic builder for waves/synths, for copying, etc
 
 """
 import numpy as np
+
 import pyaudio
+
 import wave
 import sys
 import struct
+
 import soundutil as su
 import threading
+
 import time
 import ctypes
 
@@ -75,23 +78,33 @@ class PyOsc:
     def __init__(self):
         # get tables sounds from util
         self.sinTable = su.hdSinTable()
-        self.triTable = su.triTable()
-        self.sawTable = su.sawTable()
-        self.sqrTable = su.sqrTable()
-        self.noiseTable = su.noiseTable()
+        self.triTable = su.hdTriTable()
+        self.sawTable = su.hdSawTable()
+        self.sqrTable = su.hdSqrTable()
+        self.noiseTable = su.hdNoiseTable()
 
         # maybe use this for tables, not sure if it will impact performance
         self.waveTables = [self.sinTable, self.triTable, self.sawTable, self.sqrTable, self.noiseTable]
+        self.waveToTable = {
+            'sine':self.sinTable,
+            'triangle':self.triTable,
+            'saw':self.sawTable,
+            'square':self.sqrTable,
+            'noise':self.noiseTable
+        }
 
     """
     Simple waveform closures
     """
-    def sinWave(self, start=0):
+    def simpleWave(self, start=0, wave='sine'):
         step = 1
         index = start
-        table = self.sinTable
+        if wave in self.waveToTable:
+            table = self.waveToTable[wave]
+        else:
+            table = self.sinTable
         tempt = np.arange(0,CHUNK_SIZE)
-        tablelen = len(self.sinTable)
+        tablelen = len(table)
 
         def nextSampleVector(freq):
             nonlocal step
@@ -99,87 +112,6 @@ class PyOsc:
             adjustedfreq = int(freq*100)
             t = (tempt*adjustedfreq + index) % tablelen
             index = (t[-1] + adjustedfreq) % tablelen
-            samples = table[t]
-            return samples
-
-        def reset():
-            nonlocal index
-            index = 0
-
-        return nextSampleVector, reset
-
-    def sawWave(self, start=0,):
-        step = 1
-        index = start
-        table = self.sawTable
-        tempt = np.arange(0,CHUNK_SIZE)
-
-        def nextSampleVector(freq=step):
-            nonlocal step
-            nonlocal index
-            t = (tempt*step + index) % FS
-            index = (index + CHUNK_SIZE*step) % FS
-            samples = table[t]
-            return samples
-
-        def reset():
-            nonlocal index
-            index = 0
-
-        return nextSampleVector, reset
-
-    def triWave(self, start=0):
-        step = 1
-        index = start
-        table = self.triTable
-        tempt = np.arange(0,CHUNK_SIZE)
-
-        def nextSampleVector(freq=step):
-            nonlocal step
-            nonlocal index
-            t = (tempt*step + index) % FS
-            index = (index + CHUNK_SIZE*step) % FS
-            samples = table[t]
-            return samples
-
-        def reset():
-            nonlocal index
-            index = 0
-
-        return nextSampleVector, reset
-
-    def sqrWave(self, start=0):
-        # Todo - pulse width
-        step = 1
-        index = start
-        table = self.sqrTable
-        tempt = np.arange(0,CHUNK_SIZE)
-
-        def nextSampleVector(freq=step):
-            nonlocal step
-            nonlocal index
-            t = (tempt*step + index) % FS
-            index = (index + CHUNK_SIZE*step) % FS
-            samples = table[t]
-            return samples
-
-        def reset():
-            nonlocal index
-            index = 0
-
-        return nextSampleVector, reset
-
-    def noiseWave(self, start=0): #white noise
-        step = 1
-        index = start
-        table = self.noiseTable
-        tempt = np.arange(0,CHUNK_SIZE)
-
-        def nextSampleVector(freq=step):
-            nonlocal step
-            nonlocal index
-            t = (tempt*step + index) % FS
-            index = (index + CHUNK_SIZE*step) % FS
             samples = table[t]
             return samples
 
@@ -229,9 +161,10 @@ class PyOsc:
         tempt = np.arange(lenad+lenrel, dtype=int)
 
         releasescale = 1 # for when note is released before attack env is done
+        attackscale = 1
 
         zeros = np.zeros(CHUNK_SIZE)
-        ones = np.ones(CHUNK_SIZE)
+        ones = np.ones(CHUNK_SIZE)*hlevel
         t = np.ones(CHUNK_SIZE, dtype=int)
 
         def nextVector():
@@ -239,7 +172,7 @@ class PyOsc:
             nonlocal lastlevel
             nonlocal t
 
-            if lastlevel == 1:
+            if index == lenad:
                 return ones
 
             if on:
@@ -372,11 +305,9 @@ class PyOsc:
             nonlocal modindex
             nonlocal index
             # nonlocal outvec
-
             envvalue = env[0]()
             if envvalue[0] == 0:
                 return zeros
-            # print(envvalue[0])
             TWOPIOVERFSCFREQ = TWOPIOVERFS*cfreq
             t = tempt + index
             index = (t[-1] + 1)%(FSperiod)
@@ -479,28 +410,29 @@ class PolySynthpy:
         self.pack = struct.Struct('{}f'.format(CHUNK_SIZE)).pack
 
     def initVoices(self):
-        oscAdsr = (0, .4, .9, .1)
-        oscWave = self.osc.sinWave
+        oscAdsr = (.1, .4, .9, .1)
+        oscWave1 = 'sin'
+        oscWave2 = 'sin'
         oscMix = .5
-        oscTune = 0
+        oscTune = 8
 
-        fm1Adsr = (0, .15, .6, 1)
+        fm1Adsr = (.1, .1, .6, .1)
         fm1Index = 2
-        fm1Harm1 = 2
+        fm1Harm1 = 1
         fm1Harm2 = 1
 
-        fm2Adsr = (0, .2, .5, .1)
+        fm2Adsr = (.1, .2, .5, .1)
         fm2Index = 2
-        fm2Harm1 = 2
+        fm2Harm1 = 1
         fm2Harm2 = 1
 
-        fm3Adsr = (0, .1, .7, .1)
-        fm3Index = 4
+        fm3Adsr = (.1, .1, .7, .1)
+        fm3Index = 3
         fm3Harm1 = 1
         fm3Harm2 = .5
         for i in range(0, self.NUMVOICES):
             # Populate voices
-            baseosc = self.osc.pynth2(oscWave(), oscWave(), self.osc.adsr(oscAdsr[0], oscAdsr[1], oscAdsr[2], oscAdsr[3]), oscMix, oscTune)
+            baseosc = self.osc.pynth2(self.osc.simpleWave(wave=oscWave1), self.osc.simpleWave(wave=oscWave2), self.osc.adsr(oscAdsr[0], oscAdsr[1], oscAdsr[2], oscAdsr[3]), oscMix, oscTune)
             fm1 = self.osc.fmpynth(self.osc.adsr(fm1Adsr[0], fm1Adsr[1], fm1Adsr[2], fm1Adsr[3]), baseosc, fm1Index, fm1Harm1, fm1Harm2)
             fm2 = self.osc.fmpynth(self.osc.adsr(fm2Adsr[0], fm2Adsr[1], fm2Adsr[2], fm2Adsr[3]), fm1, fm2Index, fm2Harm1, fm2Harm2)
             fm3 = self.osc.fmpynth(self.osc.adsr(fm3Adsr[0], fm3Adsr[1], fm3Adsr[2], fm3Adsr[3]), fm2, fm3Index, fm3Harm1, fm3Harm2)
@@ -529,7 +461,6 @@ class PolySynthpy:
         # get synth samples if key is pressed
         dataarr = ((self.VOICES[0][0]() + self.VOICES[1][0]() + self.VOICES[2][0]() + self.VOICES[3][0]() + self.VOICES[4][0]())/5.0).astype('float32', copy=False)
         return dataarr.tobytes()
-
 
     # setup listener
     # key has to agree with pygame
@@ -576,44 +507,75 @@ class MonoSynthpy:
         self.initVoices()
 
     def initVoices(self):
-        oscAdsr = (0, .4, .4, .1)
-        oscWave = self.osc.sinWave
+        oscAdsr = (0, .2, .4, .1)
+        oscWave1 = 'square'
+        oscWave2 = 'triangle'
         oscMix = .5
-        oscTune = 8
+        oscTune = 0
 
-        fm1Adsr = (1, 1, .6, .2)
+        fm1Adsr = (1.9, .3, .6, .2)
         fm1Index = 2
         fm1Harm1 = 2
         fm1Harm2 = 1
 
-        fm2Adsr = (1.5, 1, .5, .3)
+        fm2Adsr = (1.7, 5, .5, .3)
         fm2Index = 2
         fm2Harm1 = 1
         fm2Harm2 = 1
 
-        fm3Adsr = (.4, .1, .6, .4)
-        fm3Index = 4
+        fm3Adsr = (1.3, .7, .6, .4)
+        fm3Index = 2
         fm3Harm1 = 1
         fm3Harm2 = 1
 
-        fm4Adsr = (.2, .1, .6, .5)
-        fm4Index = 4
+        fm4Adsr = (1.1, .9, .6, .5)
+        fm4Index = 2
         fm4Harm1 = 1
-        fm4Harm2 = .5
+        fm4Harm2 = 1
 
-        fm5Adsr = (0, .5, .8, .6)
+        fm5Adsr = (.9, 1.1, .8, .6)
         fm5Index = 2
         fm5Harm1 = 1
-        fm5Harm2 = .5
+        fm5Harm2 = 1
 
-        baseosc = self.osc.pynth2(oscWave(), oscWave(), self.osc.adsr(oscAdsr[0], oscAdsr[1], oscAdsr[2], oscAdsr[3]), oscMix, oscTune)
+        fm6Adsr = (.7, 1.3, .8, .7)
+        fm6Index = 2
+        fm6Harm1 = 1
+        fm6Harm2 = 1
+
+        fm7Adsr = (.5, 1.7, .8, .8)
+        fm7Index = 2
+        fm7Harm1 = 1
+        fm7Harm2 = 1
+
+        fm8Adsr = (.3, 1.9, .8, .9)
+        fm8Index = 2
+        fm8Harm1 = 1
+        fm8Harm2 = 1
+
+        fm9Adsr = (.2, 2.3, .8, 1)
+        fm9Index = 2
+        fm9Harm1 = 1
+        fm9Harm2 = .5
+
+        fm10Adsr = (0, 1, .8, 1.1)
+        fm10Index = 2
+        fm10Harm1 = 1
+        fm10Harm2 = .5
+
+        baseosc = self.osc.pynth2(self.osc.simpleWave(wave=oscWave1), self.osc.simpleWave(wave=oscWave2), self.osc.adsr(oscAdsr[0], oscAdsr[1], oscAdsr[2], oscAdsr[3]), oscMix, oscTune)
         fm1 = self.osc.fmpynth(self.osc.adsr(fm1Adsr[0], fm1Adsr[1], fm1Adsr[2], fm1Adsr[3]), baseosc, fm1Index, fm1Harm1, fm1Harm2)
         fm2 = self.osc.fmpynth(self.osc.adsr(fm2Adsr[0], fm2Adsr[1], fm2Adsr[2], fm2Adsr[3]), fm1, fm2Index, fm2Harm1, fm2Harm2)
         fm3 = self.osc.fmpynth(self.osc.adsr(fm3Adsr[0], fm3Adsr[1], fm3Adsr[2], fm3Adsr[3]), fm2, fm3Index, fm3Harm1, fm3Harm2)
         fm4 = self.osc.fmpynth(self.osc.adsr(fm4Adsr[0], fm4Adsr[1], fm4Adsr[2], fm4Adsr[3]), fm3, fm4Index, fm4Harm1, fm4Harm2)
         fm5 = self.osc.fmpynth(self.osc.adsr(fm5Adsr[0], fm5Adsr[1], fm5Adsr[2], fm5Adsr[3]), fm4, fm5Index, fm5Harm1, fm5Harm2)
+        fm6 = self.osc.fmpynth(self.osc.adsr(fm6Adsr[0], fm6Adsr[1], fm6Adsr[2], fm6Adsr[3]), fm5, fm6Index, fm6Harm1, fm6Harm2)
+        fm7 = self.osc.fmpynth(self.osc.adsr(fm7Adsr[0], fm7Adsr[1], fm7Adsr[2], fm7Adsr[3]), fm6, fm7Index, fm7Harm1, fm7Harm2)
+        fm8 = self.osc.fmpynth(self.osc.adsr(fm8Adsr[0], fm8Adsr[1], fm8Adsr[2], fm8Adsr[3]), fm7, fm8Index, fm8Harm1, fm8Harm2)
+        fm9 = self.osc.fmpynth(self.osc.adsr(fm9Adsr[0], fm9Adsr[1], fm9Adsr[2], fm9Adsr[3]), fm8, fm9Index, fm9Harm1, fm9Harm2)
+        fm10 = self.osc.fmpynth(self.osc.adsr(fm10Adsr[0], fm10Adsr[1], fm10Adsr[2], fm10Adsr[3]), fm9, fm10Index, fm10Harm1, fm10Harm2)
 
-        self.VOICE = fm5
+        self.VOICE = fm10
 
     def start(self):
         self.stream = self.p.open(rate=FS,
@@ -628,7 +590,6 @@ class MonoSynthpy:
         self.stream.close()
         self.p.terminate()
 
-
     def callback(self, in_data, frame_count, time_info, status):
         dataarr = []
         # get synth samples if key is pressed
@@ -639,21 +600,10 @@ class MonoSynthpy:
             print("underflow")
         return (data, pyaudio.paContinue)
 
-    # def pygameCallback(self):
-    #     dataarr = []
-    #     # get synth samples if key is pressed
-    #     dataarr = np.int16(self.VOICE[0]()*32767)
-    #     data = struct.pack('{}h'.format(CHUNK_SIZE), *dataarr)
-    #     return data
-
     def pygameCallback(self):
-        dataarr = []
         # get synth samples if key is pressed
-        dataarr = self.VOICE[0]()
-        # dataarr = ZEROS
-        data = struct.pack('{}f'.format(CHUNK_SIZE), *dataarr)
-        return data
-
+        dataarr = self.VOICE[0]().astype('float32', copy=False)
+        return dataarr.tobytes()
 
     # setup listener
     # key has to agree with pygame
@@ -700,7 +650,6 @@ class MonoSynthpy:
 
 def test():
     synth = PolySynthpy()
-    # synth.start()
     synth.on_press(48)
     synth.on_press(48+2)
     synth.on_press(48+4)
@@ -708,10 +657,6 @@ def test():
     synth.on_press(48+8)
     for i in range(0,1000):
         data = synth.pygameCallback()
-    # time.sleep(0.01)
-    # time.sleep(2)
-    # synth.exit()
-
 
 if __name__=="__main__":
     cProfile.run('test()')

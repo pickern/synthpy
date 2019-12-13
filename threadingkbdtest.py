@@ -10,6 +10,7 @@ import cProfile
 import logging
 import pyaudio
 import queue
+import gc
 
 # constants
 BLACK = (0,0,0)
@@ -236,28 +237,6 @@ def main():
     for i in range(0, pygame.midi.get_count()):
         print(pygame.midi.get_device_info(i))
 
-    """
-    Model of synpthy voices
-    """
-    oscAdsr = (0, .4, .4, .5)
-    oscMix = .5
-    oscTune = 8
-
-    fm1Adsr = (0, .15, .6, 1)
-    fm1Index = 2
-    fm1Harm1 = 2
-    fm1Harm2 = 1
-
-    fm2Adsr = (0, .2, .5, .1)
-    fm2Index = 2
-    fm2Harm1 = 1
-    fm2Harm2 = 1
-
-    fm3Adsr = (0, .1, .7, .5)
-    fm3Index = 2
-    fm3Harm1 = 1
-    fm3Harm2 = .5
-    # theKeyboard.midiKeyDown(48)
     """
     MAIN LOOP
     """

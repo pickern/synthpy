@@ -4,8 +4,9 @@ import struct
 
 FS = 44100
 TABLE_LENGTH = 44100
+HD_TABLE_LENGTH = TABLE_LENGTH*100
 x = np.arange(TABLE_LENGTH)
-hdx = np.arange(TABLE_LENGTH*100)
+hdx = np.arange(HD_TABLE_LENGTH)
 
 """
 Keyboard key to note dictionary
@@ -150,9 +151,6 @@ paFloat32 formatted
 def sinTable():
     return np.sin((2*np.pi/TABLE_LENGTH)*x)
 
-def hdSinTable():
-    return np.sin((2*np.pi/(TABLE_LENGTH*100))*hdx)
-
 def triTable():
     tab = (4.0/(TABLE_LENGTH)*x)
     tab[int(TABLE_LENGTH/4):int(TABLE_LENGTH/2)] = 1-tab[0:int(TABLE_LENGTH/4)]
@@ -169,6 +167,26 @@ def sqrTable():
 
 def noiseTable():
     return np.random.random(TABLE_LENGTH)
+
+def hdSinTable():
+    return np.sin((2*np.pi/(HD_TABLE_LENGTH))*hdx)
+
+def hdTriTable():
+    tab = (4.0/(HD_TABLE_LENGTH)*hdx)
+    tab[int(HD_TABLE_LENGTH/4):int(HD_TABLE_LENGTH/2)] = 1-tab[0:int(HD_TABLE_LENGTH/4)]
+    tab[int(HD_TABLE_LENGTH/2):]=-1*tab[0:int(HD_TABLE_LENGTH/2)]
+    return tab
+
+def hdSawTable():
+    tab = (2.0/(HD_TABLE_LENGTH))*hdx
+    tab[int(HD_TABLE_LENGTH/2):] = tab[int(HD_TABLE_LENGTH/2):] - 2
+    return tab
+
+def hdSqrTable():
+    return np.sign(HD_TABLE_LENGTH/2-hdx)
+
+def hdNoiseTable():
+    return np.random.random(HD_TABLE_LENGTH)
 
 """
 Old Int16 tables
